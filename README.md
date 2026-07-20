@@ -1,8 +1,8 @@
 # Real-Time Cold-Chain Sensor Data Lakehouse
 
-An interview-focused data-engineering project that turns deterministic refrigerated-shipment
-events into queryable Apache Iceberg tables while exercising event time, bad-data isolation,
-deduplication, temporal enrichment, recovery, and schema evolution.
+A production-inspired data-engineering reference project that turns deterministic
+refrigerated-shipment events into queryable Apache Iceberg tables while exercising event time,
+bad-data isolation, deduplication, temporal enrichment, recovery, and schema evolution.
 
 ```text
 Python simulator -> Kafka + Avro -> Java Flink -> Iceberg REST / Polaris -> MinIO
@@ -115,7 +115,7 @@ docker compose --env-file .env exec -T trino trino --file /sql/analytics.sql
 docker compose --env-file .env exec -T trino trino --file /sql/verification.sql
 ```
 
-See [the demo walkthrough](docs/demo-walkthrough.md) for the interview narrative and
+See [the demo walkthrough](docs/demo-walkthrough.md) for the end-to-end operating flow and
 [schema evolution](docs/evolution.md) for the savepoint-backed v1-to-v2 deployment.
 
 ## Verification status
@@ -128,7 +128,7 @@ machine-specific retained evidence; see [benchmark evidence](docs/benchmark.md).
 
 ## Design boundary
 
-This is a single-machine portfolio prototype. TLS, multi-broker/high-availability Kafka,
+This is a single-machine reference implementation. TLS, multi-broker/high-availability Kafka,
 Kubernetes, cloud deployment, ML, and a business UI are outside its scope. The equivalent AWS
 services and production changes are mapped in [AWS mapping](docs/aws-mapping.md).
 
