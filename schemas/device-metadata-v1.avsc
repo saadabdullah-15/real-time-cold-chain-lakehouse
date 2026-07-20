@@ -1,0 +1,22 @@
+{
+  "type": "record",
+  "name": "DeviceMetadata",
+  "namespace": "com.portfolio.coldchain",
+  "fields": [
+    {"name": "event_id", "type": "string"},
+    {"name": "device_id", "type": "string"},
+    {"name": "event_time", "type": {"type": "long", "logicalType": "timestamp-millis"}},
+    {"name": "produced_at", "type": {"type": "long", "logicalType": "timestamp-millis"}},
+    {"name": "sequence_number", "type": "long"},
+    {"name": "metadata_version", "type": "int"},
+    {"name": "effective_from", "type": {"type": "long", "logicalType": "timestamp-millis"}},
+    {"name": "shipment_id", "type": "string"},
+    {"name": "vehicle_id", "type": "string"},
+    {"name": "origin", "type": "string"},
+    {"name": "destination", "type": "string"},
+    {"name": "cargo_type", "type": "string"},
+    {"name": "min_temperature_c", "type": "double"},
+    {"name": "max_temperature_c", "type": "double"},
+    {"name": "status", "type": {"type": "enum", "name": "ShipmentStatus", "symbols": ["ACTIVE", "DELIVERED", "MAINTENANCE"]}}
+  ]
+}

@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "coldchain-simulator"
+version = "0.1.0"
+description = "Deterministic cold-chain sensor event simulator for Kafka"
+requires-python = ">=3.11"
+dependencies = [
+  "confluent-kafka[avro,schemaregistry]==2.12.2",
+  "fastavro==1.12.1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest==8.4.1",
+  "pytest-cov==6.2.1",
+  "ruff==0.12.4",
+]
+bootstrap = [
+  "boto3==1.39.14",
+]
+
+[project.scripts]
+coldchain-simulator = "simulator.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["simulator*"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests/python"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

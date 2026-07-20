@@ -1,0 +1,15 @@
+{
+  "type": "record",
+  "name": "DetectionEvent",
+  "namespace": "com.portfolio.coldchain",
+  "fields": [
+    {"name": "event_id", "type": "string"},
+    {"name": "device_id", "type": "string"},
+    {"name": "event_time", "type": {"type": "long", "logicalType": "timestamp-millis"}},
+    {"name": "produced_at", "type": {"type": "long", "logicalType": "timestamp-millis"}},
+    {"name": "sequence_number", "type": "long"},
+    {"name": "detection_type", "type": {"type": "enum", "name": "DetectionType", "symbols": ["DOOR_OPEN", "DOOR_CLOSED", "SHOCK"]}},
+    {"name": "severity", "type": {"type": "enum", "name": "Severity", "symbols": ["INFO", "WARNING", "CRITICAL"]}},
+    {"name": "magnitude", "type": ["null", "double"], "default": null}
+  ]
+}

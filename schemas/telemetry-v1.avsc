@@ -1,0 +1,15 @@
+{
+  "type": "record",
+  "name": "TelemetryEvent",
+  "namespace": "com.portfolio.coldchain",
+  "fields": [
+    {"name": "event_id", "type": "string"},
+    {"name": "device_id", "type": "string"},
+    {"name": "event_time", "type": {"type": "long", "logicalType": "timestamp-millis"}},
+    {"name": "produced_at", "type": {"type": "long", "logicalType": "timestamp-millis"}},
+    {"name": "sequence_number", "type": "long"},
+    {"name": "measurement_type", "type": {"type": "enum", "name": "MeasurementType", "symbols": ["TEMPERATURE", "HUMIDITY", "BATTERY"]}},
+    {"name": "value", "type": "double"},
+    {"name": "unit", "type": {"type": "enum", "name": "MeasurementUnit", "symbols": ["CELSIUS", "PERCENT"]}}
+  ]
+}
