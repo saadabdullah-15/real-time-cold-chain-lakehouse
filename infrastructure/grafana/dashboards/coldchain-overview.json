@@ -1,0 +1,100 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "eps"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 0},
+      "id": 1,
+      "targets": [{"expr": "sum(rate(flink_taskmanager_job_task_operator_numRecordsIn[1m]))", "legendFormat": "input"}, {"expr": "sum(rate(flink_taskmanager_job_task_operator_numRecordsOut[1m]))", "legendFormat": "output"}],
+      "title": "Pipeline throughput",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 0},
+      "id": 2,
+      "targets": [{"expr": "sum(kafka_consumergroup_lag{consumergroup=\"coldchain-flink-pipeline-v1\"})", "legendFormat": "consumer lag"}],
+      "title": "Kafka consumer lag",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "ms"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 0},
+      "id": 3,
+      "targets": [{"expr": "max(flink_taskmanager_job_task_backPressuredTimeMsPerSecond)", "legendFormat": "backpressured ms/s"}],
+      "title": "Backpressure",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "gridPos": {"h": 7, "w": 6, "x": 0, "y": 8},
+      "id": 4,
+      "targets": [{"expr": "sum(flink_taskmanager_job_task_operator_invalid_records)", "legendFormat": "invalid"}],
+      "title": "Invalid records",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "gridPos": {"h": 7, "w": 6, "x": 6, "y": 8},
+      "id": 5,
+      "targets": [{"expr": "sum(flink_taskmanager_job_task_operator_duplicate_records)", "legendFormat": "duplicates"}],
+      "title": "Duplicates removed",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "gridPos": {"h": 7, "w": 6, "x": 12, "y": 8},
+      "id": 6,
+      "targets": [{"expr": "sum(flink_taskmanager_job_task_operator_too_late_records)", "legendFormat": "too late"}],
+      "title": "Too-late records",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "eps"}, "overrides": []},
+      "gridPos": {"h": 7, "w": 6, "x": 18, "y": 8},
+      "id": 7,
+      "targets": [{"expr": "sum(rate(kafka_topic_partition_current_offset{topic=\"coldchain.breach-alerts.v1\"}[5m]))", "legendFormat": "breaches/s"}],
+      "title": "Breach alert rate",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 15},
+      "id": 8,
+      "targets": [{"expr": "max(flink_jobmanager_job_numberOfCompletedCheckpoints)", "legendFormat": "completed"}, {"expr": "max(flink_jobmanager_job_numberOfFailedCheckpoints)", "legendFormat": "failed"}],
+      "title": "Checkpoints",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 15},
+      "id": 9,
+      "targets": [{"expr": "max(flink_jobmanager_job_numRestarts)", "legendFormat": "restarts"}],
+      "title": "Job restarts",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 41,
+  "tags": ["cold-chain", "flink", "kafka"],
+  "templating": {"list": []},
+  "time": {"from": "now-1h", "to": "now"},
+  "timezone": "browser",
+  "title": "Cold-Chain Lakehouse Overview",
+  "uid": "coldchain-overview",
+  "version": 1
+}

@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: Cold Chain
+    orgId: 1
+    folder: Cold Chain
+    type: file
+    disableDeletion: true
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards

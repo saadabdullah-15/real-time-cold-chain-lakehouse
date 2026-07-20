@@ -1,0 +1,44 @@
+name: Reduced Docker integration
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lakehouse:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create local-only credentials
+        shell: pwsh
+        run: |
+          ./scripts/coldchain.ps1 status
+      - name: Start stack
+        shell: pwsh
+        run: |
+          ./scripts/coldchain.ps1 up
+      - name: Emit reduced deterministic workload
+        run: >-
+          docker compose --env-file .env --profile tools run --rm simulator
+          --profile demo --events 10000 --rate 500
+          --manifest data/manifest.json
+      - name: Reconcile all layers
+        shell: pwsh
+        run: |
+          ./scripts/coldchain.ps1 verify
+      - name: Capture service logs
+        if: always()
+        run: docker compose --env-file .env logs --no-color > integration.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: integration-evidence
+          path: |
+            integration.log
+            data/manifest.json
+      - name: Clean up
+        if: always()
+        run: docker compose --env-file .env down --volumes --remove-orphans
