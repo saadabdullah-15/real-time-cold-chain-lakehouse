@@ -1,0 +1,9 @@
+.git
+.github
+.idea
+.vscode
+.pytest_cache
+**/__pycache__
+flink-job/target
+data
+docs

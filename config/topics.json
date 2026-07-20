@@ -1,0 +1,11 @@
+{
+  "topics": [
+    {"name": "coldchain.telemetry.v1", "partitions": 6, "cleanupPolicy": "delete", "retentionMs": 604800000},
+    {"name": "coldchain.location.v1", "partitions": 3, "cleanupPolicy": "delete", "retentionMs": 604800000},
+    {"name": "coldchain.detection.v1", "partitions": 3, "cleanupPolicy": "delete", "retentionMs": 604800000},
+    {"name": "coldchain.device-metadata.v1", "partitions": 3, "cleanupPolicy": "compact", "retentionMs": -1},
+    {"name": "coldchain.dlq.v1", "partitions": 3, "cleanupPolicy": "delete", "retentionMs": 2592000000},
+    {"name": "coldchain.late.v1", "partitions": 3, "cleanupPolicy": "delete", "retentionMs": 2592000000},
+    {"name": "coldchain.breach-alerts.v1", "partitions": 3, "cleanupPolicy": "delete", "retentionMs": 2592000000}
+  ]
+}
