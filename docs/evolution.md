@@ -4,14 +4,16 @@ The repository starts with `PIPELINE_SCHEMA_VERSION=1`. The Java model can read 
 field, but the initial Iceberg table intentionally omits it. This makes the deployment sequence
 observable instead of silently creating the final schema on day one.
 
-## 1. Verify compatibility and register v2
+## 1. Write and verify v1 data
 
-Bootstrap already tests `telemetry-v2.avsc` against the latest v1 subject under
-`FULL_TRANSITIVE`. Register it only when the deployment is approved:
+Start from `PIPELINE_SCHEMA_VERSION=1`, run a scoped demo, and retain its manifest:
 
 ```powershell
-docker compose --env-file .env --profile tools run --rm --entrypoint python simulator -m tools.register_v2
+pwsh ./scripts/coldchain.ps1 demo
 ```
+
+Query `signal_strength_dbm` only after the column is added in the later step. Record the v1
+manifest and the current enriched-table snapshot ID.
 
 ## 2. Stop with a savepoint
 
@@ -22,40 +24,64 @@ docker compose --env-file .env exec -T jobmanager flink list
 docker compose --env-file .env exec -T jobmanager flink stop --savepointPath s3://flink-checkpoints/savepoints <job-id>
 ```
 
-Copy the returned savepoint path. Edit only the ignored `.env`:
+Copy the returned savepoint path.
+
+## 3. Verify compatibility and register v2
+
+Bootstrap tests `telemetry-v2.avsc` against the latest v1 subject under `FULL_TRANSITIVE`.
+Registration is a separate approval step. The command repeats the compatibility check and refuses
+to register an incompatible schema:
+
+```powershell
+docker compose --env-file .env --profile tools run --rm --entrypoint python simulator -m tools.register_v2
+```
+
+Edit only the ignored `.env`:
 
 ```text
 PIPELINE_SCHEMA_VERSION=2
 FLINK_RESTORE_PATH=s3://flink-checkpoints/savepoints/<returned-savepoint>
 ```
 
-Recreate the application cluster:
+## 4. Evolve partitioning and restore
 
-```powershell
-docker compose --env-file .env up -d --force-recreate jobmanager taskmanager
-```
-
-The v2 job adds `signal_strength_dbm` if absent before it starts its inserts, and the custom Flink
-entrypoint appends `--fromSavepoint` when `FLINK_RESTORE_PATH` is set.
-
-## 3. Produce v2 records
-
-```powershell
-docker compose --env-file .env --profile tools run --rm simulator --profile demo --events 10000 --schema-version 2 --manifest data/manifest-v2.json
-```
-
-Old rows remain null and new telemetry rows populate the field.
-
-## 4. Evolve partitioning
+While the v1 job is stopped, apply the v2 partition specification:
 
 ```powershell
 docker compose --env-file .env exec -T trino trino --file /sql/evolution-v2.sql
 ```
 
-The new spec partitions by event day and `bucket(device_id, 8)`. Existing files retain their old
-identity-day spec and remain queryable without rewrite. New writes use the current spec.
+The SQL adds the nullable field and makes the current spec
+`event_day, bucket(event_id, 8)`. Both partition source fields are members of the upsert equality
+key, which is required for Iceberg upsert writes. Existing files keep their old event-day-only
+spec and remain queryable without rewrite. New files use the current spec.
 
-## 5. Prove snapshots and time travel
+Then recreate the application cluster using the savepoint settings above:
+
+```powershell
+docker compose --env-file .env up -d --force-recreate jobmanager taskmanager
+```
+
+The custom Flink entrypoint appends `--fromSavepoint` when `FLINK_RESTORE_PATH` is set. Stable
+operator UIDs and maximum parallelism allow the keyed deduplication and temporal history state to
+be restored.
+
+## 5. Produce and verify v2 records
+
+```powershell
+$runId = "run-$([DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ'))-$(([guid]::NewGuid().ToString('N')).Substring(0, 8))"
+$manifest = "data/runs/$runId/manifest.json"
+docker compose --env-file .env --profile tools run --rm simulator `
+  --profile demo --events 10000 --schema-version 2 `
+  --run-id $runId --manifest $manifest
+$env:MANIFEST_PATH = $manifest
+pwsh ./scripts/coldchain.ps1 verify
+```
+
+Old rows remain null and new telemetry rows populate the field. Verify both groups with the final
+query in `sql/evolution-v2.sql`, then record the new snapshot and partition specs.
+
+## 6. Prove snapshots and time travel
 
 Run the snapshot query in `sql/maintenance.sql`, record a snapshot ID, then substitute it into the
 commented `FOR VERSION AS OF` query. Compare counts before/after `optimize`; logical row counts must

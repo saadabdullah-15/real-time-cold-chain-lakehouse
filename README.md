@@ -1,107 +1,196 @@
 # Real-Time Cold-Chain Sensor Data Lakehouse
 
 [![Unit and contract tests](https://github.com/saadabdullah-15/real-time-cold-chain-lakehouse/actions/workflows/unit.yml/badge.svg)](https://github.com/saadabdullah-15/real-time-cold-chain-lakehouse/actions/workflows/unit.yml)
+[![Reduced Docker integration](https://github.com/saadabdullah-15/real-time-cold-chain-lakehouse/actions/workflows/integration.yml/badge.svg)](https://github.com/saadabdullah-15/real-time-cold-chain-lakehouse/actions/workflows/integration.yml)
 
-A reproducible streaming lakehouse for refrigerated-shipment telemetry. The project generates
+A reproducible streaming lakehouse for refrigerated-shipment telemetry. The project simulates
 temperature, humidity, battery, GPS, door, and shock events; processes them with event-time
-semantics; and stores auditable bronze, enriched silver, and aggregated gold data in Apache
+semantics in Apache Flink; and stores auditable bronze, silver, and gold datasets in Apache
 Iceberg.
 
-The entire platform runs locally with Docker Compose. Java and Maven builds, Python dependencies,
-catalog setup, schemas, topics, dashboards, tests, and verification are all containerized.
+The complete platform runs on Docker Compose. Kafka, Schema Registry, Flink, Polaris, PostgreSQL,
+MinIO, Trino, Prometheus, Grafana, the simulator, bootstrap utilities, builds, tests, and
+verification are all included in the repository.
+
+This project treats correctness claims as testable invariants. Every published Kafka coordinate is
+recorded in a run manifest and reconciled against bronze, terminal silver outcomes, and finalized
+gold aggregates. See [validation evidence](docs/evidence/README.md) for the evidence format and
+publication rules.
+
+## What the project demonstrates
+
+- Defensive ingestion that preserves raw bytes even when Avro decoding fails.
+- Payload-time watermarks applied after buffered temporal enrichment.
+- Effective-dated shipment metadata rather than a latest-value-only join.
+- Stateful `event_id` deduplication with a 24-hour TTL and explicit duplicate disposition.
+- Invalid, missing-metadata, and too-late quarantine paths.
+- Shipment-specific temperature breach detection and Kafka alerts.
+- Checkpointed Iceberg writes, RocksDB state, and savepoint restoration.
+- Run-scoped publication manifests and exact cross-layer reconciliation.
+- Schema, partition, snapshot, time-travel, compaction, and expiration workflows.
+- Metrics for throughput, lag, invalid data, duplicates, lateness, backpressure, checkpoints, and
+  restarts.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    S[Python simulator] -->|Avro events| K[(Kafka KRaft)]
+    SIM[Python simulator] -->|Avro| K[(Kafka KRaft)]
     SR[Schema Registry] --- K
-    K -->|raw records| F[Java Flink application]
-    F -->|DLQ, late events, alerts| K
-    F -->|Iceberg commits| P[Polaris REST catalog]
-    P --> PG[(PostgreSQL)]
+    K -->|raw records| F[Java Flink pipeline]
+
+    F -->|DLQ / late / breach alerts| K
+    F -->|Iceberg commits| PC[Polaris REST catalog]
+    PC --> PG[(PostgreSQL)]
     F -->|Parquet + ZSTD| M[(MinIO)]
-    T[Trino] --> P
+    F -->|checkpoints / savepoints| M
+
+    T[Trino] --> PC
     T --> M
-    PR[Prometheus] --> F
-    PR --> KE[Kafka exporter]
-    G[Grafana] --> PR
+
+    P[Prometheus] --> F
+    P --> KE[Kafka exporter]
+    G[Grafana] --> P
 ```
 
-The simulator uses `device_id` as the Kafka key and event time as Kafka `CreateTime`. Flink
-preserves every source record before decoding, then applies validation, deduplication, temporal
-metadata enrichment, late-event handling, breach detection, and hourly aggregation. Trino reads
-the same Iceberg catalog and object store used by Flink.
+The simulator publishes deterministic, fault-injected records with Confluent Avro framing. Flink
+first captures the exact Kafka record, then decodes, validates, deduplicates, enriches, assigns
+canonical event time, routes late data, detects breaches, and computes hourly shipment metrics.
+Trino queries the same Iceberg catalog and object store written by Flink.
 
-See [the detailed architecture](docs/architecture.md) for the operator flow and delivery
-semantics.
+The detailed operator flow and delivery semantics are documented in
+[docs/architecture.md](docs/architecture.md).
 
-## Core behavior
+## Processing guarantees
 
-- Captures exact Kafka payloads and coordinates—topic, partition, offset, timestamp, key, schema
-  ID, and bytes—even when decoding fails.
-- Decodes Confluent-framed Avro defensively so malformed records are quarantined without causing a
-  Flink restart loop.
-- Validates identifiers, coordinates, units, measurement ranges, sequence numbers, and metadata
-  versions.
-- Deduplicates by `event_id` with keyed state and a 24-hour TTL.
-- Uses a 60-second bounded-out-of-order watermark and 30-second idle-partition detection.
-- Selects the metadata version whose `effective_from` is the latest value not after the event
-  timestamp.
-- Routes records more than five minutes behind the active watermark to the late topic and rejected
-  table.
-- Applies shipment-specific temperature thresholds and emits breach alerts.
-- Produces updateable hourly shipment metrics using event-time windows.
-- Persists incremental RocksDB state to MinIO with 60-second checkpoints, one concurrent
-  checkpoint, a two-minute timeout, retained externalized state, and fixed-delay recovery.
-- Commits each Iceberg sink exactly once at successful Flink checkpoints.
+### Raw-first ingestion
+
+`bronze.raw_events` receives the original topic, partition, offset, Kafka timestamp, key, schema
+ID, payload, and ingestion time. Avro decoding happens in a guarded process function after the raw
+branch, so malformed bytes are preserved and quarantined without creating a restart loop.
+
+### Canonical event time
+
+The payload `event_time` is canonical. Flink rejects a Kafka timestamp difference greater than one
+second with `EVENT_TIME_MISMATCH`. The raw source emits no watermarks; timestamps and the
+60-second-bounded-out-of-order watermark are assigned after temporal enrichment. Partitions become
+idle after 30 seconds.
+
+This placement prevents buffered events from inheriting a metadata record's timestamp when they
+are released. Hourly windows remain updateable for five minutes. Events beyond the active
+lateness boundary are written with disposition `TOO_LATE`.
+
+### Temporal metadata
+
+Device metadata is versioned by `metadata_version` and `effective_from`. For each event, Flink
+selects the latest version whose effective timestamp is not after the event timestamp.
+
+Compacted metadata keys use:
+
+```text
+<device_id>:v<metadata_version>
+```
+
+This retains historical versions in Kafka. Metadata should be published before dependent events;
+Flink buffers ordinary cross-topic ordering differences for ten seconds. A newly published
+backdated correction requires replay from bronze to recalculate previously enriched history.
+
+### Deduplication and rejection
+
+Valid sensor, location, and detection records are keyed by `event_id`. The first record is retained
+and subsequent occurrences within the 24-hour state TTL are written to
+`silver.rejected_events` with disposition `DUPLICATE` and their own source coordinates.
+
+Other terminal rejection dispositions are:
+
+| Disposition | Meaning |
+|---|---|
+| `INVALID` | Avro decoding or logical contract validation failed |
+| `DUPLICATE` | The `event_id` was already seen within the TTL |
+| `MISSING_METADATA` | No effective metadata version became available |
+| `TOO_LATE` | The event exceeded the allowed event-time lateness boundary |
+
+### Checkpoint and sink semantics
+
+Flink is configured with:
+
+- 60-second exactly-once checkpoints;
+- one concurrent checkpoint;
+- a two-minute checkpoint timeout;
+- incremental RocksDB state in MinIO;
+- retained externalized checkpoints;
+- fixed-delay restart behavior;
+- runtime parallelism 2 and stable maximum parallelism 128;
+- explicit stable operator UIDs for savepoint-compatible upgrades.
+
+Each Iceberg sink commits exactly once at successful checkpoints. Kafka DLQ, late, and breach
+sinks use exactly-once transactions with separate transactional ID prefixes.
 
 Iceberg commits across different tables are independent. A checkpoint does not create one atomic
-transaction spanning the complete bronze, silver, and gold model, so readers may briefly observe
-checkpoint-scale visibility skew.
+multi-table transaction, so readers may briefly observe checkpoint-scale visibility skew before
+all tables converge.
 
-## Kafka contracts
+## Data contracts
 
-All valid records contain `event_id`, `device_id`, `event_time`, `produced_at`, and
-`sequence_number`.
+All valid input records carry:
 
-| Topic | Partitions | Policy | Purpose |
+```text
+event_id
+device_id
+event_time
+produced_at
+sequence_number
+```
+
+Sensor topics use `device_id` as the Kafka key. Metadata uses the version-preserving composite key
+described above. Schema Registry compatibility is configured as `FULL_TRANSITIVE`, and simulator
+schema auto-registration is disabled.
+
+| Topic | Partitions | Cleanup | Purpose |
 |---|---:|---|---|
-| `coldchain.telemetry.v1` | 6 | Delete, 7 days | Temperature, humidity, and battery measurements |
-| `coldchain.location.v1` | 3 | Delete, 7 days | GPS position, speed, and accuracy |
+| `coldchain.telemetry.v1` | 6 | Delete, 7 days | Temperature, humidity, and battery |
+| `coldchain.location.v1` | 3 | Delete, 7 days | Position, speed, and GPS accuracy |
 | `coldchain.detection.v1` | 3 | Delete, 7 days | Door-open, door-close, and shock detections |
-| `coldchain.device-metadata.v1` | 3 | Compact | Effective-dated shipment and device metadata |
-| `coldchain.dlq.v1` | 3 | Delete, 30 days | Avro decoding and logical-validation failures |
-| `coldchain.late.v1` | 3 | Delete, 30 days | Records rejected by the event-time lateness policy |
-| `coldchain.breach-alerts.v1` | 3 | Delete, 30 days | Shipment temperature-threshold alerts |
+| `coldchain.device-metadata.v1` | 3 | Compact | Effective-dated device and shipment history |
+| `coldchain.dlq.v1` | 3 | Delete, 30 days | Decode and validation failures |
+| `coldchain.late.v1` | 3 | Delete, 30 days | Too-late events |
+| `coldchain.breach-alerts.v1` | 3 | Delete, 30 days | Temperature-threshold alerts |
 
-Schema Registry uses `FULL_TRANSITIVE` compatibility. The repository includes an additive
-telemetry v2 schema with nullable `signal_strength_dbm` for the documented evolution workflow.
+Validation covers identifiers, sequence numbers, timestamps, Kafka keys, telemetry units and
+ranges, latitude/longitude, speed, GPS accuracy, detection types, metadata versions, and shipment
+temperature bounds.
 
 ## Lakehouse model
 
-All tables use Iceberg format v2 with Parquet files and ZSTD compression.
+All tables use Iceberg format v2, Parquet files, and ZSTD compression.
 
 | Layer and table | Write model | Partitioning | Purpose |
 |---|---|---|---|
-| `bronze.raw_events` | Append | Kafka day | Exact source bytes and Kafka coordinates |
+| `bronze.raw_events` | Append | Kafka day | Exact source record and replay boundary |
 | `silver.device_metadata_history` | Upsert by device/version | Unpartitioned | Effective-dated shipment metadata |
 | `silver.enriched_events` | Upsert by event/day | Event day | Valid, unique, historically enriched events |
-| `silver.rejected_events` | Append | Rejection day | Invalid, missing-metadata, and too-late records |
-| `gold.shipment_hourly_metrics` | Upsert by shipment/window/day | Window day | Conditions, detections, breaches, locations, and counts |
+| `silver.rejected_events` | Append | Rejection day | Explicit terminal rejection outcomes |
+| `gold.shipment_hourly_metrics` | Upsert by shipment/window/day | Window day | Hourly conditions, detections, breaches, and position |
 
-The v2 evolution adds `bucket(device_id, 8)` to `silver.enriched_events` without rewriting the
-files written under the original day-only partition specification.
+The controlled v2 deployment adds nullable `signal_strength_dbm` and evolves
+`silver.enriched_events` to:
+
+```text
+event_day, bucket(event_id, 8)
+```
+
+Both partition source fields belong to the table's upsert equality key. Existing files remain
+readable under the original event-day-only specification.
 
 ## Prerequisites
 
 - Docker Desktop with Docker Compose v2
-- At least 4 CPUs and 10 GB of memory assigned to Docker
+- At least 4 CPUs and 10 GB RAM assigned to Docker
 - PowerShell 7, available as `pwsh`
 
-No local Python, Java, Maven, or Make installation is required. All externally exposed ports bind
-to `127.0.0.1`. On first use, the operator script creates an ignored `.env` and replaces the
-template passwords with generated local-development credentials.
+Local Java, Maven, Python, and Make installations are not required. All exposed ports bind to
+`127.0.0.1`. On first use, the operator script copies `.env.example` to an ignored `.env` and
+replaces the template passwords with generated local credentials.
 
 ## Quick start
 
@@ -114,17 +203,18 @@ pwsh ./scripts/coldchain.ps1 demo
 The `demo` command:
 
 1. Builds and starts the complete platform.
-2. Idempotently creates MinIO buckets, Kafka topics, Avro subjects, and the Polaris catalog.
-3. Emits 100,000 deterministic sensor events at 500 events/second, plus device metadata and
-   injected duplicate deliveries.
-4. Writes `data/manifest.json` with independently generated expected counts.
-5. Waits for a Flink checkpoint triggered after the simulator run.
-6. Reconciles the manifest against the committed Iceberg tables through Trino.
+2. Waits for Kafka, Schema Registry, MinIO, Polaris, Flink, and Trino.
+3. Idempotently creates buckets, topics, schemas, catalog roles, and namespaces.
+4. Publishes 100,000 simulated sensor events at 500 events/second, plus metadata and duplicate
+   deliveries.
+5. Writes a manifest only after all Kafka delivery callbacks succeed.
+6. Waits for a checkpoint newer than the run.
+7. Reconciles the run through Trino.
 
-The first run is slower because it downloads the runtime images and Maven dependencies and builds
-the pinned MinIO community release from source. Later runs reuse Docker and Maven caches.
+The first start downloads images and dependencies and builds the pinned MinIO community release
+from source. Later starts reuse Docker and Maven caches.
 
-## Operations
+## Operator commands
 
 ```powershell
 pwsh ./scripts/coldchain.ps1 <command>
@@ -132,17 +222,168 @@ pwsh ./scripts/coldchain.ps1 <command>
 
 | Command | Behavior |
 |---|---|
-| `up` | Build and start the platform, then wait for Flink and Trino |
-| `status` | Show container status and local service URLs |
-| `demo` | Run the default 100k-event workload and reconcile every layer |
-| `verify` | Re-run reconciliation against `data/manifest.json` |
-| `failure-drill` | Run the benchmark profile, kill the TaskManager, recover, and reconcile |
-| `test` | Run Python tests and the Maven test suite in containers |
-| `down` | Stop services while retaining volumes and generated data |
-| `reset` | Delete project volumes and manifests after typing `RESET` |
+| `up` | Build and start the platform; wait for Flink and Trino |
+| `status` | Display container state and local endpoints |
+| `demo` | Publish and reconcile the 100k-event accelerated workload |
+| `benchmark` | Publish and reconcile the 300k-event benchmark workload |
+| `verify` | Reconcile the latest manifest or the path in `MANIFEST_PATH` |
+| `failure-drill` | Kill the TaskManager during ingestion, recover, and reconcile |
+| `test` | Run Python and Java tests in containers |
+| `down` | Stop services while retaining volumes and manifests |
+| `reset` | Delete project volumes and generated run manifests after confirmation |
 
-`reset` is destructive. Use `-Force` only in automation where deleting all local project data is
-intentional.
+`reset` is destructive. For intentional non-interactive cleanup:
+
+```powershell
+pwsh ./scripts/coldchain.ps1 reset -Force
+```
+
+## Simulator profiles
+
+| Profile | Sensor events | Simulated event-time span | Default publish rate |
+|---|---:|---:|---:|
+| `baseline` | 100,000 | 24 hours | About 1.16 events/s |
+| `demo` | 100,000 | 24 hours | 500 events/s |
+| `benchmark` | 300,000 | 5 minutes | 1,000 events/s |
+
+Default fault injection:
+
+- 1% duplicate deliveries;
+- 0.5% invalid records;
+- 5% out-of-order events;
+- 1% events delayed by more than five minutes.
+
+Metadata and duplicate deliveries are additional Kafka records, so `delivered_total` is normally
+greater than the configured sensor-event count.
+
+Run a smaller custom workload after starting the platform:
+
+```powershell
+docker compose --env-file .env --profile tools run --rm simulator `
+  --profile demo `
+  --run-id run-local-example `
+  --events 10000 `
+  --rate 500 `
+  --devices 100 `
+  --seed 7
+```
+
+Available overrides include:
+
+```text
+--profile
+--run-id
+--events
+--rate
+--event-time-span-seconds
+--seed
+--devices
+--duplicate-rate
+--invalid-rate
+--out-of-order-rate
+--too-late-rate
+--schema-version
+--manifest
+--dry-run
+```
+
+If `--run-id` is omitted, the simulator creates:
+
+```text
+run-<UTC timestamp>-<8 hex>
+```
+
+Device, shipment, vehicle, and deterministic event IDs are namespaced by the run ID. Consecutive
+runs therefore remain independently queryable without collisions.
+
+## Run manifests
+
+Successful publications write manifest version 2 to:
+
+```text
+data/runs/<run-id>/manifest.json
+```
+
+The file is created atomically only after:
+
+- `Producer.flush()` returns zero queued messages;
+- every delivery callback succeeds;
+- attempted and confirmed delivery counts match.
+
+The manifest contains run status and timestamps, configuration, attempted and delivered totals,
+achieved publish rate, generation counters, and compressed Kafka topic/partition/offset ranges.
+Those ranges define the exact verification scope; reconciliation does not depend on table-wide
+counts or timestamps.
+
+Dry runs use status `DRY_RUN` and do not claim Kafka deliveries.
+
+## Verification
+
+Run the latest completed manifest:
+
+```powershell
+pwsh ./scripts/coldchain.ps1 verify
+```
+
+Select a specific run:
+
+```powershell
+$env:MANIFEST_PATH = "data/runs/<run-id>/manifest.json"
+pwsh ./scripts/coldchain.ps1 verify
+```
+
+The verifier waits for the bronze and terminal silver commits, then checks:
+
+- manifest version, completion status, and delivery accounting;
+- exactly one bronze row for every delivered Kafka coordinate;
+- no duplicate bronze topic/partition/offset coordinate;
+- exactly one terminal silver outcome for every delivery;
+- no coordinate duplicated across metadata, enriched, or rejected tables;
+- exact metadata, invalid, and duplicate disposition counts;
+- bounded and nonzero too-late output when late injection is present;
+- unique enriched `event_id` values within the run;
+- field-by-field equality between finalized gold windows and aggregates recomputed from run-scoped
+  silver rows.
+
+Floating-point aggregates use a small comparison tolerance. Only event-time windows that are past
+the watermark and allowed-lateness boundary are treated as finalized.
+
+## Querying with Trino
+
+Run the included SQL through the containerized CLI:
+
+```powershell
+docker compose --env-file .env exec -T trino trino --file /sql/verification.sql
+docker compose --env-file .env exec -T trino trino --file /sql/analytics.sql
+```
+
+The analytics include:
+
+- shipment temperature exposure;
+- route and GPS reporting gaps;
+- hourly conditions and breach counts;
+- rejection rates;
+- current shipment state.
+
+Snapshot inspection, time travel, file compaction, and guarded expiration examples are in
+[sql/maintenance.sql](sql/maintenance.sql).
+
+## Observability
+
+Prometheus scrapes Flink and Kafka exporter metrics. Grafana provisions the
+`Cold-Chain Lakehouse Overview` dashboard with panels for:
+
+- input and output throughput;
+- Kafka consumer lag;
+- Flink backpressure;
+- invalid records;
+- duplicates removed;
+- too-late records;
+- breach alert rate;
+- completed and failed checkpoints;
+- job restarts.
+
+Prometheus retains local data for 15 days.
 
 ## Local endpoints
 
@@ -152,92 +393,89 @@ intentional.
 | Flink dashboard | http://127.0.0.1:8081 |
 | Trino | http://127.0.0.1:8080 |
 | Schema Registry | http://127.0.0.1:8085 |
-| Polaris REST catalog | http://127.0.0.1:8181 |
+| Polaris catalog API | http://127.0.0.1:8181 |
 | MinIO API | http://127.0.0.1:9000 |
 | MinIO console | http://127.0.0.1:9001 |
 | Prometheus | http://127.0.0.1:9090 |
 | Grafana | http://127.0.0.1:3000 |
 
-Use the generated values in `.env` to sign in to MinIO and Grafana.
+Use the generated values in `.env` for MinIO and Grafana sign-in.
 
-## Querying with Trino
+## Failure recovery
 
-Run the included verification and analytical queries with the containerized Trino CLI:
-
-```powershell
-docker compose --env-file .env exec -T trino trino --file /sql/verification.sql
-docker compose --env-file .env exec -T trino trino --file /sql/analytics.sql
-```
-
-The analytics cover temperature exposure, GPS gaps, rejection rates, and current shipment state.
-Snapshot inspection, time travel, compaction, and guarded expiration examples are in
-[`sql/maintenance.sql`](sql/maintenance.sql).
-
-## Simulator profiles and fault injection
-
-| Profile | Simulated workload | Default emission rate |
-|---|---:|---:|
-| `baseline` | 100k events across one simulated day | About 1.16 events/s |
-| `demo` | 100k events across one simulated day | 500 events/s |
-| `benchmark` | 300k events across five simulated minutes | 1,000 events/s |
-
-Default fault rates are 1% duplicates, 0.5% invalid records, 5% out-of-order records, and 1%
-records delayed by more than five minutes. Because metadata and duplicate deliveries are additional
-Kafka records, the total raw count is greater than the configured sensor-event count.
-
-Run a custom workload with the Compose tools profile:
+The failure drill runs the benchmark producer, force-stops the TaskManager during ingestion,
+recreates it, waits for all Flink tasks to return to `RUNNING`, and performs the same exact
+reconciliation:
 
 ```powershell
-docker compose --env-file .env --profile tools run --rm simulator `
-  --profile demo `
-  --events 10000 `
-  --rate 500 `
-  --devices 100 `
-  --seed 7 `
-  --manifest data/custom-manifest.json
+pwsh ./scripts/coldchain.ps1 failure-drill
 ```
 
-The CLI also accepts `--event-time-span-seconds`, `--duplicate-rate`, `--invalid-rate`,
-`--out-of-order-rate`, `--too-late-rate`, and `--schema-version`.
+The command reports the measured time until Flink returns to the running state. Treat RPO,
+throughput, recovery, and lag claims as publishable only when the corresponding manifest,
+checkpoint JSON, lag data, and verifier output are retained.
 
-## Verification and testing
+## Schema and partition evolution
 
-The manifest-based verifier checks more than table availability. It asserts:
+The repository starts with telemetry schema v1. The controlled v2 workflow is:
 
-- exact raw-row reconciliation;
-- uniqueness of `(topic, partition, offset)` in bronze;
-- metadata-history and invalid-record reconciliation;
-- uniqueness of enriched `event_id` values;
-- nonzero and bounded late-event quarantine when late injection is enabled;
-- valid enriched-row bounds; and
-- populated gold aggregates.
+1. Write and verify v1 data.
+2. Stop the Flink job with a savepoint in MinIO.
+3. Check `telemetry-v2.avsc` under `FULL_TRANSITIVE` compatibility.
+4. Explicitly register v2; the simulator cannot auto-register it.
+5. Add nullable `signal_strength_dbm`.
+6. Evolve partitioning to `event_day, bucket(event_id, 8)`.
+7. Restore the Flink job from the savepoint.
+8. Publish and verify v2 records.
+9. Confirm old rows are null and new telemetry rows populate the field.
+10. Demonstrate snapshots, time travel, compaction, and guarded expiration.
 
-Run all fast tests with:
+Use the exact commands and safety boundary in [docs/evolution.md](docs/evolution.md).
+
+## Testing and CI
+
+Run the containerized test suites:
 
 ```powershell
 pwsh ./scripts/coldchain.ps1 test
 ```
 
-GitHub Actions runs Python unit/contract tests, Ruff, Java tests, and Compose model validation on
-pushes and pull requests. A manually triggered reduced-scale workflow starts the Docker stack,
-emits 10,000 events, reconciles the results, and uploads the manifest and logs.
+Python coverage includes simulator determinism, fault injection, run-ID isolation, publisher
+flush and callback failures, atomic manifests, offset compression, Trino pagination and error
+reporting, and exact reconciliation.
 
-Configured input rate is not benchmark evidence. Record the machine, Docker allocation, Kafka lag,
-checkpoint results, and reconciliation output before treating a rate as measured capacity. The
-evidence checklist is in [the benchmark guide](docs/benchmark.md).
+Java coverage includes validation, Avro mapping, aggregation, deduplication TTL, duplicate side
+output, snapshot restore, late-boundary behavior, metadata ordering, missing-metadata timers, and
+buffered event-time preservation. A Flink MiniCluster test runs at parallelism 2 and proves that
+delayed metadata still places an event in the payload-time hourly window.
 
-## Schema, partition, and snapshot evolution
+GitHub Actions:
 
-The initial deployment uses telemetry schema v1. The controlled v2 workflow:
+- runs Ruff lint and format checks plus Python tests;
+- runs `mvn verify` on Java 17;
+- validates the Compose model;
+- runs the reduced 10k-event Docker integration weekly and on manual dispatch;
+- retains the manifest, verifier output, Flink API JSON, and service logs for 30 days.
 
-1. Verifies and registers the compatible Avro schema.
-2. Stops the Flink job with a savepoint in MinIO.
-3. Enables `PIPELINE_SCHEMA_VERSION=2` and restores from that savepoint.
-4. Adds nullable `signal_strength_dbm` to the Iceberg model.
-5. Evolves enriched-event partitioning to include `bucket(device_id, 8)`.
-6. Demonstrates snapshot queries, time travel, compaction, and guarded snapshot expiration.
+Action references are SHA-pinned. Dependabot checks GitHub Actions, Python, and Maven dependencies
+weekly.
 
-Follow [the evolution guide](docs/evolution.md) for the exact commands and safety boundary.
+## Validation evidence
+
+Configured rate is workload demand, not measured capacity. Before publishing a performance or
+recovery claim, retain:
+
+- commit SHA and clean-worktree state;
+- host hardware and Docker allocation;
+- run manifests and verifier output;
+- completed and failed checkpoint counts;
+- peak and final Kafka lag plus drain time;
+- recovery time and RPO result;
+- relevant Flink and Grafana screenshots.
+
+The required run sequence, sanitized pack layout, and templates are in
+[docs/evidence/README.md](docs/evidence/README.md). The benchmark procedure is in
+[docs/benchmark.md](docs/benchmark.md).
 
 ## Technology versions
 
@@ -257,37 +495,54 @@ Follow [the evolution guide](docs/evolution.md) for the exact commands and safet
 | Grafana OSS | 13.0.3 |
 | MinIO | `RELEASE.2025-10-15T17-29-55Z`, built from source |
 
-## Repository structure
+## Repository layout
 
 | Path | Purpose |
 |---|---|
-| `simulator/` | Deterministic profiles, fault injection, Avro serialization, and publishing |
+| `simulator/` | Deterministic generation, fault injection, Avro serialization, and publishing |
 | `schemas/` | Avro v1 contracts and additive telemetry v2 |
-| `flink-job/` | Java pipeline, stateful functions, sinks, and unit tests |
-| `tools/` | Idempotent bootstrap, v2 registration, and Trino reconciliation |
+| `flink-job/` | Java pipeline, models, stateful functions, sinks, and tests |
+| `tools/` | Idempotent bootstrap, explicit v2 registration, and Trino reconciliation |
 | `sql/` | Analytics, verification, evolution, time travel, and maintenance |
 | `infrastructure/` | Container builds and Trino, Prometheus, and Grafana configuration |
-| `scripts/coldchain.ps1` | Reproducible operator interface |
-| `docs/` | Architecture, decisions, operations, evolution, troubleshooting, and cloud mapping |
+| `scripts/coldchain.ps1` | Operator interface |
+| `docs/` | Architecture, decisions, evolution, evidence, troubleshooting, and service mapping |
+| `data/runs/` | Ignored generated run manifests |
+
+## Documentation
+
+- [Architecture and data flow](docs/architecture.md)
+- [Design decisions and limitations](docs/design-decisions.md)
+- [Schema and partition evolution](docs/evolution.md)
+- [Benchmark procedure](docs/benchmark.md)
+- [Validation evidence](docs/evidence/README.md)
+- [Troubleshooting](docs/troubleshooting.md)
+- [AWS service mapping](docs/aws-mapping.md)
+- [Project brief](docs/project-brief.md)
 
 ## Operational boundaries
 
-This is a single-machine reference implementation rather than a highly available production
-deployment:
+This is a single-machine reference implementation, not a highly available production deployment.
 
-- Kafka, the Flink JobManager, and the Flink TaskManager each run as a single instance.
-- Local credentials are generated, but service traffic is not encrypted.
-- The Polaris catalog is persisted in PostgreSQL; Iceberg data and Flink checkpoints are persisted
-  in MinIO-backed Docker volumes.
-- The last open event-time window may remain active until another event advances the watermark.
-- Kubernetes, cloud deployment, multi-broker failover, TLS, and centralized secret management are
-  outside the local runtime.
+- Kafka runs as one combined broker/controller.
+- Flink runs one JobManager and one two-slot TaskManager.
+- PostgreSQL, Polaris, MinIO, Trino, Prometheus, and Grafana are single-instance services.
+- Local credentials are generated, but traffic is not encrypted.
+- No multi-broker failover, catalog HA, or distributed Trino worker pool is included.
+- The last open event-time window remains active until the watermark advances.
+- Cross-table Iceberg commits are not one atomic transaction.
+- Backdated metadata corrections require controlled replay.
+- Kubernetes, cloud deployment, Terraform, TLS, and centralized secret management are outside the
+  local runtime.
 
-See [design decisions](docs/design-decisions.md), [troubleshooting](docs/troubleshooting.md), and
-[the AWS service mapping](docs/aws-mapping.md) for production-oriented extensions.
+Production-oriented extensions are discussed in
+[docs/design-decisions.md](docs/design-decisions.md) and
+[docs/aws-mapping.md](docs/aws-mapping.md).
 
 ## References
 
+- [Apache Flink production readiness](https://nightlies.apache.org/flink/flink-docs-stable/docs/ops/production_ready/)
+- [Apache Flink testing](https://nightlies.apache.org/flink/flink-docs-release-2.1/docs/dev/datastream/testing/)
 - [Apache Iceberg engine compatibility](https://iceberg.apache.org/multi-engine-support/)
 - [Apache Iceberg Flink writes](https://iceberg.apache.org/docs/latest/flink-writes/)
 - [Apache Polaris](https://polaris.apache.org/)

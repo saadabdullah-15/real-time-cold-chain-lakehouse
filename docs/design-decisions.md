@@ -34,11 +34,15 @@ five more minutes. An event older than the watermark minus that allowance is qua
 the watermark already trails the observed maximum by 60 seconds, the effective boundary is based
 on event-time progress, not wall-clock delay.
 
-The simulator writes each record's event time as Kafka `CreateTime`, and Flink assigns watermarks
-at the Kafka source so each split advances independently before the heterogeneous streams branch.
-Partitions idle after 30 seconds and stop holding back the combined watermark. Accelerated profiles
-can move simulated time ahead of wall time, so the local broker permits timestamps up to 48 hours
-in the future; this allowance is scoped to the prototype and covers the one-day demo.
+The simulator writes each record's event time as Kafka `CreateTime`, while Flink treats the payload
+field as canonical and rejects a difference greater than one second. The raw source does not
+assign watermarks. Flink reassigns payload timestamps after temporal enrichment, then applies the
+60-second bounded-disorder and 30-second idleness policies. This placement matters because a
+buffered event may be emitted while a metadata record is being processed.
+
+Accelerated profiles can move simulated time ahead of wall time, so the local broker permits
+timestamps up to 48 hours in the future; this allowance is scoped to the prototype and covers the
+one-day demo.
 
 ## MinIO distribution
 
