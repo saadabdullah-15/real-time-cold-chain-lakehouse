@@ -41,8 +41,16 @@ public class HourlyAggregateFunction
         }
         if (event.latitude != null
                 && event.longitude != null
-                && event.eventTime >= value.lastLocationEventTime) {
+                && isNewerLocation(
+                        event.eventTime,
+                        event.sourcePartition,
+                        event.sourceOffset,
+                        value.lastLocationEventTime,
+                        value.lastLocationPartition,
+                        value.lastLocationOffset)) {
             value.lastLocationEventTime = event.eventTime;
+            value.lastLocationPartition = event.sourcePartition;
+            value.lastLocationOffset = event.sourceOffset;
             value.latestLatitude = event.latitude;
             value.latestLongitude = event.longitude;
         }
@@ -66,13 +74,35 @@ public class HourlyAggregateFunction
         left.temperatureMax = Math.max(left.temperatureMax, right.temperatureMax);
         left.humidityCount += right.humidityCount;
         left.humiditySum += right.humiditySum;
-        if (right.lastLocationEventTime >= left.lastLocationEventTime) {
+        if (isNewerLocation(
+                right.lastLocationEventTime,
+                right.lastLocationPartition,
+                right.lastLocationOffset,
+                left.lastLocationEventTime,
+                left.lastLocationPartition,
+                left.lastLocationOffset)) {
             left.lastLocationEventTime = right.lastLocationEventTime;
+            left.lastLocationPartition = right.lastLocationPartition;
+            left.lastLocationOffset = right.lastLocationOffset;
             left.latestLatitude = right.latestLatitude;
             left.latestLongitude = right.latestLongitude;
         }
         left.lastEventTime = Math.max(left.lastEventTime, right.lastEventTime);
         return left;
+    }
+
+    private static boolean isNewerLocation(
+            long candidateTime,
+            int candidatePartition,
+            long candidateOffset,
+            long currentTime,
+            int currentPartition,
+            long currentOffset) {
+        return candidateTime > currentTime
+                || (candidateTime == currentTime
+                        && (candidatePartition > currentPartition
+                                || (candidatePartition == currentPartition
+                                        && candidateOffset > currentOffset)));
     }
 
     public static class Accumulator implements Serializable {
@@ -89,6 +119,8 @@ public class HourlyAggregateFunction
         public Double latestLatitude;
         public Double latestLongitude;
         public long lastLocationEventTime = Long.MIN_VALUE;
+        public int lastLocationPartition = Integer.MIN_VALUE;
+        public long lastLocationOffset = Long.MIN_VALUE;
         public long lastEventTime = Long.MIN_VALUE;
     }
 

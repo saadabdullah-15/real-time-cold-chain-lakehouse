@@ -5,6 +5,7 @@ import com.portfolio.coldchain.model.NormalizedEvent;
 import java.util.Set;
 
 public final class EventValidator {
+    private static final long MAX_EVENT_TIME_DIFFERENCE_MS = 1_000;
     private static final Set<String> EVENT_TYPES =
             Set.of(
                     "TELEMETRY_TEMPERATURE",
@@ -26,11 +27,24 @@ public final class EventValidator {
         if (event.eventTime <= 0 || event.producedAt <= 0) {
             return ValidationResult.invalid("INVALID_TIMESTAMP", "Timestamps must be positive");
         }
+        ValidationResult contract =
+                validateKafkaContract(
+                        event.kafkaKey, event.deviceId, event.eventTime, event.kafkaTimestamp);
+        if (!contract.valid()) {
+            return contract;
+        }
         return switch (event.eventType) {
             case "TELEMETRY_TEMPERATURE" ->
-                    inRange(event.numericValue, -50, 100, "temperature");
+                    telemetry(
+                            event.numericValue, -50, 100, "temperature", event.unit, "CELSIUS");
             case "TELEMETRY_HUMIDITY", "TELEMETRY_BATTERY" ->
-                    inRange(event.numericValue, 0, 100, event.eventType.toLowerCase());
+                    telemetry(
+                            event.numericValue,
+                            0,
+                            100,
+                            event.eventType.toLowerCase(),
+                            event.unit,
+                            "PERCENT");
             case "LOCATION" -> validateLocation(event);
             case "DETECTION" ->
                     blank(event.detectionType)
@@ -51,7 +65,9 @@ public final class EventValidator {
             return ValidationResult.invalid(
                     "INVALID_METADATA_VERSION", "Metadata version must be positive");
         }
-        if (metadata.effectiveFrom <= 0
+        if (metadata.eventTime <= 0
+                || metadata.producedAt <= 0
+                || metadata.effectiveFrom <= 0
                 || blank(metadata.shipmentId)
                 || blank(metadata.vehicleId)) {
             return ValidationResult.invalid(
@@ -61,7 +77,47 @@ public final class EventValidator {
             return ValidationResult.invalid(
                     "INVALID_TEMPERATURE_RANGE", "Minimum temperature must be below maximum");
         }
+        String expectedKey = metadata.deviceId + ":v" + metadata.metadataVersion;
+        if (!expectedKey.equals(metadata.kafkaKey)) {
+            return ValidationResult.invalid(
+                    "KAFKA_KEY_MISMATCH",
+                    "Metadata Kafka key must be <device_id>:v<metadata_version>");
+        }
+        if (Math.abs(metadata.eventTime - metadata.kafkaTimestamp)
+                > MAX_EVENT_TIME_DIFFERENCE_MS) {
+            return ValidationResult.invalid(
+                    "EVENT_TIME_MISMATCH",
+                    "Payload event_time differs from Kafka timestamp by more than one second");
+        }
         return ValidationResult.ok();
+    }
+
+    private static ValidationResult validateKafkaContract(
+            String kafkaKey, String deviceId, long eventTime, long kafkaTimestamp) {
+        if (!deviceId.equals(kafkaKey)) {
+            return ValidationResult.invalid(
+                    "KAFKA_KEY_MISMATCH", "Kafka key must equal payload device_id");
+        }
+        if (Math.abs(eventTime - kafkaTimestamp) > MAX_EVENT_TIME_DIFFERENCE_MS) {
+            return ValidationResult.invalid(
+                    "EVENT_TIME_MISMATCH",
+                    "Payload event_time differs from Kafka timestamp by more than one second");
+        }
+        return ValidationResult.ok();
+    }
+
+    private static ValidationResult telemetry(
+            Double value,
+            double minimum,
+            double maximum,
+            String name,
+            String actualUnit,
+            String expectedUnit) {
+        if (!expectedUnit.equals(actualUnit)) {
+            return ValidationResult.invalid(
+                    "INVALID_UNIT", name + " must use " + expectedUnit);
+        }
+        return inRange(value, minimum, maximum, name);
     }
 
     private static ValidationResult validateLocation(NormalizedEvent event) {

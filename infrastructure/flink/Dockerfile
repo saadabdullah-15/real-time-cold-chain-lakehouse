@@ -6,7 +6,8 @@ WORKDIR /build
 COPY flink-job/pom.xml ./pom.xml
 RUN --mount=type=cache,target=/root/.m2 set -eu; \
     for attempt in 1 2 3; do \
-      mvn -B -Dmaven.wagon.http.retryHandler.count=5 dependency:go-offline && exit 0; \
+      mvn -B -Dmaven.wagon.http.retryHandler.count=5 \
+        dependency:go-offline -DexcludeScope=test && exit 0; \
       echo "Maven dependency download attempt ${attempt} failed; retrying" >&2; \
       sleep 5; \
     done; \
@@ -14,7 +15,7 @@ RUN --mount=type=cache,target=/root/.m2 set -eu; \
 COPY flink-job/src ./src
 RUN --mount=type=cache,target=/root/.m2 set -eu; \
     for attempt in 1 2 3; do \
-      mvn -B -Dmaven.wagon.http.retryHandler.count=5 package -DskipTests \
+      mvn -B -Dmaven.wagon.http.retryHandler.count=5 package -Dmaven.test.skip=true \
       && mkdir -p /runtime-libs \
       && mvn -B -Dmaven.wagon.http.retryHandler.count=5 dependency:copy-dependencies \
          -DincludeArtifactIds=iceberg-flink-runtime-2.1,iceberg-aws-bundle,hadoop-client-api,hadoop-client-runtime \

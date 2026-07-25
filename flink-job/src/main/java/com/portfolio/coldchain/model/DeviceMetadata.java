@@ -21,6 +21,8 @@ public class DeviceMetadata implements Serializable {
     public String sourceTopic;
     public int sourcePartition;
     public long sourceOffset;
+    public String kafkaKey;
+    public long kafkaTimestamp;
     public long ingestedAt;
 
     public DeviceMetadata() {}

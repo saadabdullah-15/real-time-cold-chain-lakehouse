@@ -36,6 +36,8 @@ class EventValidatorTest {
         event.sequenceNumber = 1;
         event.eventTime = 1_700_000_000_000L;
         event.producedAt = 1_700_000_000_100L;
+        event.kafkaKey = event.deviceId;
+        event.kafkaTimestamp = event.eventTime;
         event.eventType = "TELEMETRY_TEMPERATURE";
         event.numericValue = value;
         event.unit = "CELSIUS";

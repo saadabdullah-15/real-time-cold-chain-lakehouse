@@ -22,6 +22,8 @@ public class NormalizedEvent implements Serializable {
     public String sourceTopic;
     public int sourcePartition;
     public long sourceOffset;
+    public String kafkaKey;
+    public long kafkaTimestamp;
     public long ingestedAt;
 
     public NormalizedEvent() {}

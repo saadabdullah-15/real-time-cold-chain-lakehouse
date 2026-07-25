@@ -39,7 +39,7 @@ public class RejectedEvent implements Serializable {
 
     public static RejectedEvent missingMetadata(NormalizedEvent source) {
         RejectedEvent event = fromNormalized(source);
-        event.disposition = "INVALID";
+        event.disposition = "MISSING_METADATA";
         event.errorCode = "MISSING_METADATA";
         event.errorMessage = "No metadata version was effective for this event";
         return event;
@@ -62,6 +62,14 @@ public class RejectedEvent implements Serializable {
         return event;
     }
 
+    public static RejectedEvent duplicate(NormalizedEvent source) {
+        RejectedEvent event = fromNormalized(source);
+        event.disposition = "DUPLICATE";
+        event.errorCode = "DUPLICATE_EVENT_ID";
+        event.errorMessage = "event_id was already observed within the 24-hour TTL";
+        return event;
+    }
+
     private static RejectedEvent fromNormalized(NormalizedEvent source) {
         RejectedEvent event = new RejectedEvent();
         event.eventId = source.eventId;
@@ -70,6 +78,7 @@ public class RejectedEvent implements Serializable {
         event.sourceTopic = source.sourceTopic;
         event.sourcePartition = source.sourcePartition;
         event.sourceOffset = source.sourceOffset;
+        event.kafkaTimestamp = source.kafkaTimestamp;
         event.rejectedAt = System.currentTimeMillis();
         return event;
     }

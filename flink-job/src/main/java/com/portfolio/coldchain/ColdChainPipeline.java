@@ -49,7 +49,14 @@ public final class ColdChainPipeline {
 
         StreamExecutionEnvironment execution = StreamExecutionEnvironment.getExecutionEnvironment();
         execution.setRuntimeMode(RuntimeExecutionMode.STREAMING);
-        execution.setParallelism(integer(env, "FLINK_PIPELINE_PARALLELISM", 2));
+        int parallelism = integer(env, "FLINK_PIPELINE_PARALLELISM", 2);
+        int maxParallelism = integer(env, "FLINK_MAX_PARALLELISM", 128);
+        if (parallelism <= 0 || maxParallelism < parallelism || maxParallelism > (1 << 15)) {
+            throw new IllegalArgumentException(
+                    "Flink parallelism must satisfy 0 < parallelism <= max parallelism <= 32768");
+        }
+        execution.setParallelism(parallelism);
+        execution.setMaxParallelism(maxParallelism);
         execution.enableCheckpointing(60_000, CheckpointingMode.EXACTLY_ONCE);
         CheckpointConfig checkpoints = execution.getCheckpointConfig();
         checkpoints.setCheckpointTimeout(120_000);
@@ -66,12 +73,8 @@ public final class ColdChainPipeline {
                         .setProperty("isolation.level", "read_committed")
                         .build();
 
-        WatermarkStrategy<RawKafkaRecord> sourceWatermarks =
-                WatermarkStrategy.<RawKafkaRecord>forBoundedOutOfOrderness(Duration.ofSeconds(60))
-                        .withIdleness(Duration.ofSeconds(30))
-                        .withTimestampAssigner((record, timestamp) -> record.kafkaTimestamp);
         DataStream<RawKafkaRecord> raw =
-                execution.fromSource(source, sourceWatermarks, "kafka-raw-source")
+                execution.fromSource(source, WatermarkStrategy.noWatermarks(), "kafka-raw-source")
                         .uid("kafka-raw-source");
 
         SingleOutputStreamOperator<NormalizedEvent> decoded =
@@ -86,8 +89,10 @@ public final class ColdChainPipeline {
                         .process(new DeduplicateFunction())
                         .name("deduplicate-event-id")
                         .uid("deduplicate-event-id");
+        DataStream<RejectedEvent> duplicates =
+                deduplicated.getSideOutput(OutputTags.DUPLICATE);
 
-        SingleOutputStreamOperator<EnrichedEvent> enriched =
+        SingleOutputStreamOperator<EnrichedEvent> enrichedWithoutWatermarks =
                 deduplicated
                         .keyBy(event -> event.deviceId)
                         .connect(metadata.keyBy(event -> event.deviceId))
@@ -95,7 +100,17 @@ public final class ColdChainPipeline {
                         .name("event-time-metadata-enrichment")
                         .uid("event-time-metadata-enrichment");
         DataStream<RejectedEvent> missingMetadata =
-                enriched.getSideOutput(OutputTags.MISSING_METADATA);
+                enrichedWithoutWatermarks.getSideOutput(OutputTags.MISSING_METADATA);
+
+        WatermarkStrategy<EnrichedEvent> canonicalEventTime =
+                WatermarkStrategy.<EnrichedEvent>forBoundedOutOfOrderness(Duration.ofSeconds(60))
+                        .withIdleness(Duration.ofSeconds(30))
+                        .withTimestampAssigner((event, timestamp) -> event.eventTime);
+        SingleOutputStreamOperator<EnrichedEvent> enriched =
+                enrichedWithoutWatermarks
+                        .assignTimestampsAndWatermarks(canonicalEventTime)
+                        .name("canonical-event-time-watermarks")
+                        .uid("canonical-event-time-watermarks");
 
         SingleOutputStreamOperator<EnrichedEvent> onTime =
                 enriched.keyBy(event -> event.deviceId)
@@ -103,7 +118,8 @@ public final class ColdChainPipeline {
                         .name("late-event-router")
                         .uid("late-event-router");
         DataStream<RejectedEvent> late = onTime.getSideOutput(OutputTags.LATE);
-        DataStream<RejectedEvent> allRejected = decodingRejected.union(missingMetadata, late);
+        DataStream<RejectedEvent> allRejected =
+                decodingRejected.union(duplicates, missingMetadata, late);
 
         DataStream<ShipmentHourlyMetric> hourly =
                 onTime.keyBy(event -> event.shipmentId)
@@ -115,8 +131,12 @@ public final class ColdChainPipeline {
                         .name("shipment-hourly-metrics")
                         .uid("shipment-hourly-metrics");
 
-        DataStream<BreachAlert> breaches =
+        SingleOutputStreamOperator<EnrichedEvent> breachedEvents =
                 onTime.filter(event -> event.breach)
+                        .name("temperature-breach-filter")
+                        .uid("temperature-breach-filter");
+        DataStream<BreachAlert> breaches =
+                breachedEvents
                         .map(BreachAlert::from)
                         .returns(TypeInformation.of(BreachAlert.class))
                         .name("temperature-breach-alerts")

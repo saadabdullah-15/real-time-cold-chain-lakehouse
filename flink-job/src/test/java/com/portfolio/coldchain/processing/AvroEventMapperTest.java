@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.portfolio.coldchain.model.NormalizedEvent;
 import com.portfolio.coldchain.model.RawKafkaRecord;
+import java.nio.charset.StandardCharsets;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericData;
 import org.apache.avro.generic.GenericRecord;
@@ -63,6 +64,12 @@ class AvroEventMapperTest {
 
     private static RawKafkaRecord raw() {
         return new RawKafkaRecord(
-                "coldchain.telemetry.v1", 0, 0L, 1_000L, new byte[] {1}, new byte[] {2}, 1_002L);
+                "coldchain.telemetry.v1",
+                0,
+                0L,
+                1_000L,
+                "device-1".getBytes(StandardCharsets.UTF_8),
+                new byte[] {2},
+                1_002L);
     }
 }

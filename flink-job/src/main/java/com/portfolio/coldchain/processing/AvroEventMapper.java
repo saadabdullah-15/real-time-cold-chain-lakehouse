@@ -3,6 +3,7 @@ package com.portfolio.coldchain.processing;
 import com.portfolio.coldchain.model.DeviceMetadata;
 import com.portfolio.coldchain.model.NormalizedEvent;
 import com.portfolio.coldchain.model.RawKafkaRecord;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import org.apache.avro.generic.GenericRecord;
 
@@ -41,6 +42,8 @@ public final class AvroEventMapper {
         target.sourceTopic = raw.sourceTopic;
         target.sourcePartition = raw.sourcePartition;
         target.sourceOffset = raw.sourceOffset;
+        target.kafkaKey = key(raw);
+        target.kafkaTimestamp = raw.kafkaTimestamp;
         target.ingestedAt = raw.ingestedAt;
         return target;
     }
@@ -55,6 +58,8 @@ public final class AvroEventMapper {
         target.sourceTopic = raw.sourceTopic;
         target.sourcePartition = raw.sourcePartition;
         target.sourceOffset = raw.sourceOffset;
+        target.kafkaKey = key(raw);
+        target.kafkaTimestamp = raw.kafkaTimestamp;
         target.ingestedAt = raw.ingestedAt;
     }
 
@@ -111,5 +116,9 @@ public final class AvroEventMapper {
             return instant.toEpochMilli();
         }
         throw new IllegalArgumentException(field + " is not a supported timestamp");
+    }
+
+    private static String key(RawKafkaRecord raw) {
+        return raw.kafkaKey == null ? null : new String(raw.kafkaKey, StandardCharsets.UTF_8);
     }
 }

@@ -1,6 +1,7 @@
 package com.portfolio.coldchain.processing;
 
 import com.portfolio.coldchain.model.NormalizedEvent;
+import com.portfolio.coldchain.model.RejectedEvent;
 import java.time.Duration;
 import org.apache.flink.api.common.functions.OpenContext;
 import org.apache.flink.api.common.state.StateTtlConfig;
@@ -33,6 +34,7 @@ public class DeduplicateFunction
             NormalizedEvent event, Context context, Collector<NormalizedEvent> out) throws Exception {
         if (Boolean.TRUE.equals(seen.value())) {
             duplicateCounter.inc();
+            context.output(OutputTags.DUPLICATE, RejectedEvent.duplicate(event));
             return;
         }
         seen.update(true);
