@@ -1,4 +1,4 @@
-# Benchmark and résumé evidence
+# Benchmark and measured evidence
 
 No throughput result should be copied to a résumé merely because the simulator is configured for
 1,000 events/second. Configuration is demand; a benchmark is evidence.
@@ -10,12 +10,12 @@ No throughput result should be copied to a résumé merely because the simulator
 3. Run the benchmark producer for 300,000 events at 1,000/s.
 4. Confirm zero failed checkpoints, no producer delivery errors, exact raw reconciliation, unique
    enriched IDs, and Kafka lag returning to zero within two minutes.
-5. Save `data/failure-manifest.json`, verifier output, relevant Prometheus exports/screenshots, and
-   the Flink checkpoint/job JSON.
+5. Save the run-scoped manifest, verifier output, relevant Prometheus exports/screenshots, and the
+   Flink checkpoint/job JSON.
 
-The `failure-drill` command covers the same workload while injecting a TaskManager loss. For a
-clean capacity measurement, run the benchmark simulator without the kill, then `verify` against a
-separately named manifest.
+Use `pwsh ./scripts/coldchain.ps1 benchmark` for the clean capacity run. The `failure-drill`
+command covers the same workload while injecting a TaskManager loss. Each command generates a
+separate run ID and manifest under `data/runs/<run-id>/manifest.json`.
 
 ## Evidence record
 
@@ -30,9 +30,9 @@ separately named manifest.
 | Completed / failed checkpoints | _not measured_ |
 | Recovery outcome | _not measured_ |
 
-## Résumé bullet gate
+## Published-claim gate
 
-After the evidence table is complete, a defensible bullet can use the actual values:
+After the evidence table is complete, a defensible summary can use the actual values:
 
 > Built a Kafka/Flink/Iceberg cold-chain lakehouse that sustained **[measured rate] events/s** for
 > **[duration]**, reconciled **[row count]** source records exactly, and recovered from a forced

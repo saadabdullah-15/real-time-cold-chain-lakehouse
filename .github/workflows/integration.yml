@@ -2,6 +2,8 @@ name: Reduced Docker integration
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "30 3 * * 0"
 
 permissions:
   contents: read
@@ -11,34 +13,64 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Create local-only credentials
         shell: pwsh
         run: |
           ./scripts/coldchain.ps1 status
+      - name: Create run scope
+        shell: pwsh
+        run: |
+          $timestamp = [DateTime]::UtcNow.ToString("yyyyMMddTHHmmssZ")
+          $suffix = [guid]::NewGuid().ToString("N").Substring(0, 8)
+          $runId = "run-$timestamp-$suffix"
+          "RUN_ID=$runId" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "MANIFEST_PATH=data/runs/$runId/manifest.json" |
+            Out-File -FilePath $env:GITHUB_ENV -Append
       - name: Start stack
         shell: pwsh
         run: |
           ./scripts/coldchain.ps1 up
       - name: Emit reduced deterministic workload
-        run: >-
-          docker compose --env-file .env --profile tools run --rm simulator
-          --profile demo --events 10000 --rate 500
-          --manifest data/manifest.json
+        shell: pwsh
+        run: |
+          docker compose --env-file .env --profile tools run --rm simulator `
+            --profile demo --events 10000 --rate 500 `
+            --run-id $env:RUN_ID --manifest $env:MANIFEST_PATH
+          if ($LASTEXITCODE -ne 0) { throw "Simulator failed with exit code $LASTEXITCODE" }
       - name: Reconcile all layers
         shell: pwsh
         run: |
-          ./scripts/coldchain.ps1 verify
+          ./scripts/coldchain.ps1 verify 2>&1 | Tee-Object -FilePath verifier-output.txt
+      - name: Capture Flink API evidence
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path evidence -Force | Out-Null
+          $overview = Invoke-RestMethod -Uri http://127.0.0.1:8081/jobs/overview
+          $overview | ConvertTo-Json -Depth 100 |
+            Set-Content -LiteralPath evidence/flink-overview.json
+          foreach ($job in $overview.jobs) {
+            Invoke-RestMethod -Uri "http://127.0.0.1:8081/jobs/$($job.jid)" |
+              ConvertTo-Json -Depth 100 |
+              Set-Content -LiteralPath "evidence/flink-job-$($job.jid).json"
+            Invoke-RestMethod -Uri "http://127.0.0.1:8081/jobs/$($job.jid)/checkpoints" |
+              ConvertTo-Json -Depth 100 |
+              Set-Content -LiteralPath "evidence/flink-checkpoints-$($job.jid).json"
+          }
       - name: Capture service logs
         if: always()
         run: docker compose --env-file .env logs --no-color > integration.log
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:
           name: integration-evidence
+          retention-days: 30
           path: |
             integration.log
-            data/manifest.json
+            verifier-output.txt
+            evidence/
+            data/runs/**/manifest.json
       - name: Clean up
         if: always()
         run: docker compose --env-file .env down --volumes --remove-orphans

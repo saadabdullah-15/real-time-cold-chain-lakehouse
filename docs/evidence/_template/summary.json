@@ -1,0 +1,36 @@
+{
+  "status": "INCOMPLETE",
+  "commit": {
+    "sha": null,
+    "worktree_clean": null
+  },
+  "environment": {
+    "cpu": null,
+    "physical_ram_gb": null,
+    "os": null,
+    "docker_version": null,
+    "docker_cpus": null,
+    "docker_memory_gb": null
+  },
+  "runs": [],
+  "checkpoint_summary": {
+    "completed": null,
+    "failed": null
+  },
+  "kafka_lag": {
+    "peak": null,
+    "final": null,
+    "drain_seconds": null
+  },
+  "failure_drill": {
+    "recovery_seconds": null,
+    "rpo": null
+  },
+  "evolution": {
+    "v1_schema_id": null,
+    "v2_schema_id": null,
+    "restore_succeeded": null,
+    "partition_specs_verified": null,
+    "snapshots_verified": null
+  }
+}
