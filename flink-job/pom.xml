@@ -16,7 +16,7 @@
     <flink.kafka.version>5.0.0-2.1</flink.kafka.version>
     <iceberg.version>1.11.0</iceberg.version>
     <hadoop.version>3.4.1</hadoop.version>
-    <confluent.version>8.2.2</confluent.version>
+    <confluent.version>8.3.0</confluent.version>
     <jackson.version>2.19.2</jackson.version>
     <junit.version>5.13.4</junit.version>
   </properties>
