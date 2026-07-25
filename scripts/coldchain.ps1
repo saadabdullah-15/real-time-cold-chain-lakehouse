@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet("up", "status", "demo", "verify", "failure-drill", "down", "reset", "test")]
+    [ValidateSet("up", "status", "demo", "benchmark", "verify", "failure-drill", "down", "reset", "test")]
     [string]$Command = "status",
     [switch]$Force
 )
@@ -88,11 +88,44 @@ function Wait-FlinkCheckpointAfter {
     throw "Timed out waiting for a Flink checkpoint newer than $runStart"
 }
 
+function Wait-FlinkRunning {
+    param([int]$TimeoutSeconds = 300)
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $overview = Invoke-RestMethod -Uri "http://127.0.0.1:8081/jobs/overview" -TimeoutSec 5
+            $job = $overview.jobs | Where-Object { $_.state -eq "RUNNING" } | Select-Object -First 1
+            if ($null -ne $job -and $job.tasks.total -gt 0 -and
+                $job.tasks.running -eq $job.tasks.total) {
+                return
+            }
+        } catch {
+            Start-Sleep -Seconds 3
+        }
+        Start-Sleep -Seconds 3
+    }
+    throw "Timed out waiting for all Flink tasks to reach RUNNING"
+}
+
+function New-RunContext {
+    param([string]$Profile)
+    $timestamp = [DateTime]::UtcNow.ToString("yyyyMMddTHHmmssZ")
+    $suffix = [guid]::NewGuid().ToString("N").Substring(0, 8)
+    $runId = "run-$timestamp-$suffix"
+    return [pscustomobject]@{
+        RunId = $runId
+        Profile = $Profile
+        RelativeManifest = "data/runs/$runId/manifest.json"
+        HostManifest = Join-Path $RepoRoot "data/runs/$runId/manifest.json"
+    }
+}
+
 function Start-Platform {
     Initialize-Environment
     Invoke-Docker (Compose-Arguments @("up", "-d", "--build"))
     Wait-Http "http://127.0.0.1:8081/overview"
     Wait-Http "http://127.0.0.1:8080/v1/info"
+    Wait-FlinkRunning
     Write-Host "Cold-chain platform is ready."
 }
 
@@ -107,46 +140,77 @@ function Show-Status {
 }
 
 function Run-Verification {
+    param([string]$ManifestPath)
     Initialize-Environment
+    if ([string]::IsNullOrWhiteSpace($ManifestPath) -and
+        -not [string]::IsNullOrWhiteSpace($env:MANIFEST_PATH)) {
+        $ManifestPath = $env:MANIFEST_PATH
+    }
+    if ([string]::IsNullOrWhiteSpace($ManifestPath)) {
+        $latest = Get-ChildItem -LiteralPath (Join-Path $RepoRoot "data/runs") `
+            -Filter manifest.json -File -Recurse -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTimeUtc -Descending |
+            Select-Object -First 1
+        if ($null -eq $latest) { throw "No run manifest exists under data/runs" }
+        $ManifestPath = [IO.Path]::GetRelativePath($RepoRoot, $latest.FullName).Replace("\", "/")
+    }
     Invoke-Docker (Compose-Arguments @(
-        "--profile", "tools", "run", "--rm", "--entrypoint", "python",
+        "--profile", "tools", "run", "--rm", "-e", "MANIFEST_PATH=$ManifestPath",
+        "--entrypoint", "python",
         "simulator", "-m", "tools.verify"
     ))
 }
 
 function Run-Demo {
     Start-Platform
+    $run = New-RunContext "demo"
     Invoke-Docker (Compose-Arguments @(
         "--profile", "tools", "run", "--rm", "simulator",
-        "--profile", "demo", "--manifest", "data/manifest.json"
+        "--profile", $run.Profile, "--run-id", $run.RunId,
+        "--manifest", $run.RelativeManifest
     ))
-    Wait-FlinkCheckpointAfter (Join-Path $RepoRoot "data/manifest.json")
-    Run-Verification
+    Wait-FlinkCheckpointAfter $run.HostManifest
+    Run-Verification $run.RelativeManifest
     Write-Host "Demo complete. Open Grafana at http://127.0.0.1:3000."
+}
+
+function Run-Benchmark {
+    Start-Platform
+    $run = New-RunContext "benchmark"
+    Invoke-Docker (Compose-Arguments @(
+        "--profile", "tools", "run", "--rm", "simulator",
+        "--profile", $run.Profile, "--run-id", $run.RunId,
+        "--manifest", $run.RelativeManifest
+    ))
+    Wait-FlinkCheckpointAfter $run.HostManifest
+    Run-Verification $run.RelativeManifest
+    Write-Host "Benchmark workload reconciled. Preserve machine and lag evidence before citing capacity."
 }
 
 function Run-FailureDrill {
     Start-Platform
+    $run = New-RunContext "benchmark"
     & docker rm -f coldchain-failure-producer 2>$null | Out-Null
     $producerArguments = Compose-Arguments @(
         "--profile", "tools", "run", "-d", "--name", "coldchain-failure-producer",
-        "simulator", "--profile", "benchmark", "--manifest", "data/failure-manifest.json"
+        "simulator", "--profile", $run.Profile, "--run-id", $run.RunId,
+        "--manifest", $run.RelativeManifest
     )
     $producerId = & docker @producerArguments
     if ($LASTEXITCODE -ne 0) { throw "Could not start failure-drill producer" }
     Start-Sleep -Seconds 20
+    $failureStarted = [DateTime]::UtcNow
     Invoke-Docker (Compose-Arguments @("kill", "-s", "SIGKILL", "taskmanager"))
     Invoke-Docker (Compose-Arguments @("up", "-d", "taskmanager"))
+    Wait-FlinkRunning 120
+    $recoverySeconds = ([DateTime]::UtcNow - $failureStarted).TotalSeconds
     & docker wait $producerId.Trim() | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Failure-drill producer failed" }
-    Wait-FlinkCheckpointAfter (Join-Path $RepoRoot "data/failure-manifest.json")
-    Invoke-Docker (Compose-Arguments @(
-        "--profile", "tools", "run", "--rm", "-e",
-        "MANIFEST_PATH=data/failure-manifest.json", "--entrypoint", "python",
-        "simulator", "-m", "tools.verify"
-    ))
+    Wait-FlinkCheckpointAfter $run.HostManifest
+    Run-Verification $run.RelativeManifest
     Invoke-Docker @("rm", "coldchain-failure-producer")
-    Write-Host "Failure drill passed: TaskManager recovered and reconciliation succeeded."
+    Write-Host ("Failure drill passed with RPO 0; Flink returned to RUNNING in {0:N1}s." -f
+        $recoverySeconds)
 }
 
 function Run-Tests {
@@ -168,6 +232,7 @@ switch ($Command) {
     "up" { Start-Platform }
     "status" { Show-Status }
     "demo" { Run-Demo }
+    "benchmark" { Run-Benchmark }
     "verify" { Run-Verification }
     "failure-drill" { Run-FailureDrill }
     "down" {
@@ -182,8 +247,13 @@ switch ($Command) {
             if ($confirmation -cne "RESET") { throw "Reset cancelled" }
         }
         Invoke-Docker (Compose-Arguments @("down", "--volumes", "--remove-orphans"))
-        Remove-Item -LiteralPath (Join-Path $RepoRoot "data/manifest.json") -Force -ErrorAction SilentlyContinue
-        Remove-Item -LiteralPath (Join-Path $RepoRoot "data/failure-manifest.json") -Force -ErrorAction SilentlyContinue
+        $runsPath = [IO.Path]::GetFullPath((Join-Path $RepoRoot "data/runs"))
+        $dataRoot = [IO.Path]::GetFullPath((Join-Path $RepoRoot "data")) +
+            [IO.Path]::DirectorySeparatorChar
+        if (-not $runsPath.StartsWith($dataRoot, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Refusing to delete run manifests outside the repository data directory"
+        }
+        Remove-Item -LiteralPath $runsPath -Recurse -Force -ErrorAction SilentlyContinue
         Write-Host "Deleted local Docker volumes and generated manifests; this cannot be recovered."
     }
     "test" { Run-Tests }

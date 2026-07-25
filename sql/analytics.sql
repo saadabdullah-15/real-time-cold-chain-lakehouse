@@ -20,7 +20,7 @@ WITH locations AS (
            longitude,
            lag(event_time) OVER (PARTITION BY device_id ORDER BY event_time) AS previous_event_time
     FROM coldchain.silver.enriched_events
-    WHERE event_type = 'location'
+    WHERE event_type = 'LOCATION'
 )
 SELECT shipment_id,
        device_id,

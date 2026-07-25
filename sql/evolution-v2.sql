@@ -1,6 +1,9 @@
 -- Run after stopping the v1 job with a savepoint and registering telemetry-v2.avsc.
 ALTER TABLE coldchain.silver.enriched_events
-SET PROPERTIES partitioning = ARRAY['day(event_time)', 'bucket(device_id, 8)'];
+ADD COLUMN IF NOT EXISTS signal_strength_dbm INTEGER;
+
+ALTER TABLE coldchain.silver.enriched_events
+SET PROPERTIES partitioning = ARRAY['event_day', 'bucket(event_id, 8)'];
 
 -- Both partition specs remain valid; Iceberg reads old and new files as one table.
 SELECT partition, record_count, file_count

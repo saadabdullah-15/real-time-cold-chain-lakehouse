@@ -125,9 +125,7 @@ def bootstrap_schemas() -> None:
             else (_ for _ in ()).throw(RuntimeError("not ready"))
         ),
     )
-    status, _ = registry_call(
-        "/config", method="PUT", body={"compatibility": "FULL_TRANSITIVE"}
-    )
+    status, _ = registry_call("/config", method="PUT", body={"compatibility": "FULL_TRANSITIVE"})
     if status not in (200, 201):
         raise RuntimeError(f"Could not configure Schema Registry compatibility: HTTP {status}")
 
