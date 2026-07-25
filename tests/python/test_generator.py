@@ -29,6 +29,8 @@ def test_generates_metadata_and_sensor_topics() -> None:
     topics = {record.topic for record in records}
     assert {METADATA_TOPIC, TELEMETRY_TOPIC, LOCATION_TOPIC}.issubset(topics)
     assert len(records) >= 105
+    metadata = [record for record in records if record.topic == METADATA_TOPIC]
+    assert all(record.key.endswith(":v1") for record in metadata)
 
 
 def test_duplicate_preserves_event_identity() -> None:
@@ -59,9 +61,7 @@ def test_initial_metadata_covers_the_injected_lateness_horizon() -> None:
     effective_from = min(
         int(record.value["effective_from"]) for record in generator.metadata_records()
     )
-    event_times = [
-        int(record.value["event_time"]) for record in generator.sensor_records()
-    ]
+    event_times = [int(record.value["event_time"]) for record in generator.sensor_records()]
 
     assert min(event_times) >= effective_from
 
@@ -82,3 +82,36 @@ def test_v2_adds_signal_strength_only_to_telemetry() -> None:
     ]
     assert telemetry
     assert all("signal_strength_dbm" in record.value for record in telemetry)
+
+
+def test_run_id_namespaces_all_business_and_event_identifiers() -> None:
+    first = RunConfig.from_profile(
+        "demo",
+        run_id="run-first",
+        event_count=10,
+        device_count=2,
+        duplicate_rate=0,
+        invalid_rate=0,
+        start_time_ms=1_700_000_000_000,
+    )
+    second = RunConfig.from_profile(
+        "demo",
+        run_id="run-second",
+        event_count=10,
+        device_count=2,
+        duplicate_rate=0,
+        invalid_rate=0,
+        start_time_ms=1_700_000_000_000,
+    )
+    first_records = list(ColdChainGenerator(first).records())
+    second_records = list(ColdChainGenerator(second).records())
+
+    first_ids = {
+        str(record.value["event_id"]) for record in first_records if record.value is not None
+    }
+    second_ids = {
+        str(record.value["event_id"]) for record in second_records if record.value is not None
+    }
+    assert first_ids.isdisjoint(second_ids)
+    assert all(record.key.startswith("run-first-") for record in first_records)
+    assert all(record.key.startswith("run-second-") for record in second_records)

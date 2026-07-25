@@ -20,6 +20,7 @@ PROFILES = {
 
 @dataclass(frozen=True)
 class RunConfig:
+    run_id: str = "run-local"
     profile: str = "demo"
     event_count: int = 100_000
     rate_per_second: float = 500.0
@@ -54,6 +55,15 @@ class RunConfig:
         return config
 
     def validate(self) -> None:
+        if not self.run_id or any(
+            character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
+            for character in self.run_id
+        ):
+            raise ValueError(
+                "run_id must contain only letters, digits, dots, underscores, or dashes"
+            )
+        if len(self.run_id) > 80:
+            raise ValueError("run_id must not exceed 80 characters")
         if self.event_count <= 0:
             raise ValueError("event_count must be positive")
         if self.rate_per_second <= 0:

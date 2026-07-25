@@ -13,6 +13,7 @@ build/
 *.egg-info/
 flink-job/target/
 data/*.json
+data/runs/
 .runtime/
 .env
 !data/.gitkeep

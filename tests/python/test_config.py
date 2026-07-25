@@ -16,3 +16,9 @@ def test_demo_profile_defaults_and_overrides() -> None:
 def test_rejects_invalid_rates(field: str) -> None:
     with pytest.raises(ValueError):
         RunConfig.from_profile("demo", **{field: 1.1})
+
+
+@pytest.mark.parametrize("run_id", ["", "has spaces", "bad/slash", "x" * 81])
+def test_rejects_invalid_run_ids(run_id: str) -> None:
+    with pytest.raises(ValueError):
+        RunConfig.from_profile("demo", run_id=run_id)

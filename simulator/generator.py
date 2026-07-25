@@ -31,12 +31,12 @@ class ColdChainGenerator:
         self._sequences = {self._device_id(i): 0 for i in range(config.device_count)}
         self._metadata = self._make_metadata()
 
-    @staticmethod
-    def _device_id(index: int) -> str:
-        return f"device-{index:04d}"
+    def _device_id(self, index: int) -> str:
+        return f"{self.config.run_id}-device-{index:04d}"
 
     def _event_id(self) -> str:
-        return str(uuid.UUID(int=self.random.getrandbits(128)))
+        value = uuid.UUID(int=self.random.getrandbits(128))
+        return f"{self.config.run_id}:{value}"
 
     def _next_sequence(self, device_id: str) -> int:
         self._sequences[device_id] += 1
@@ -51,8 +51,11 @@ class ColdChainGenerator:
             cargo_type, min_temp, max_temp = cargo[index % len(cargo)]
             result[device_id] = {
                 "route": route,
-                "shipment_id": f"shipment-{index:05d}",
-                "vehicle_id": f"vehicle-{index % max(1, self.config.device_count // 2):04d}",
+                "shipment_id": f"{self.config.run_id}-shipment-{index:05d}",
+                "vehicle_id": (
+                    f"{self.config.run_id}-vehicle-"
+                    f"{index % max(1, self.config.device_count // 2):04d}"
+                ),
                 "cargo_type": cargo_type,
                 "min_temperature_c": min_temp,
                 "max_temperature_c": max_temp,
@@ -68,7 +71,7 @@ class ColdChainGenerator:
             assert isinstance(route, tuple)
             yield GeneratedRecord(
                 topic=METADATA_TOPIC,
-                key=device_id,
+                key=f"{device_id}:v1",
                 category="metadata",
                 value={
                     "event_id": self._event_id(),
@@ -128,8 +131,9 @@ class ColdChainGenerator:
         if roll < 0.70:
             topic, value = TELEMETRY_TOPIC, self._telemetry(device_id, event_time, produced_at)
         elif roll < 0.95:
-            topic, value = LOCATION_TOPIC, self._location(
-                device_id, device_index, index, event_time, produced_at
+            topic, value = (
+                LOCATION_TOPIC,
+                self._location(device_id, device_index, index, event_time, produced_at),
             )
         else:
             topic, value = DETECTION_TOPIC, self._detection(device_id, event_time, produced_at)
