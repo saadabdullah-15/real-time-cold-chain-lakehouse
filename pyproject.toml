@@ -19,7 +19,7 @@ dev = [
   "ruff==0.12.4",
 ]
 bootstrap = [
-  "boto3==1.39.14",
+  "boto3==1.43.56",
 ]
 
 [project.scripts]
