@@ -2,8 +2,6 @@ name: Reduced Docker integration
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "30 3 * * 0"
 
 permissions:
   contents: read
